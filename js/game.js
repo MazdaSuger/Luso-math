@@ -1,62 +1,28 @@
 /* ============================================================
-   Luso-Math  —  ゲームエンジン
-   ポルトガル語 × 数学 × アフリカ近現代史 を学ぶブラウザゲーム
+   Luso-Math  —  ノベルゲーム・エンジン
+   ポルトガル語 × 数学 × アフリカ近現代史を題材にした
+   複数エンドのシリアスなノベルゲーム。
    依存：mozambique.js / angola.js（window.CAMPAIGN_* を定義）
    ============================================================ */
 (function () {
   "use strict";
 
-  var CAMPAIGNS = {
-    moz: window.CAMPAIGN_MOZ,
-    ang: window.CAMPAIGN_ANG,
-  };
+  var CAMPAIGNS = { moz: window.CAMPAIGN_MOZ, ang: window.CAMPAIGN_ANG };
 
-  // 問題タイプごとの表示設定
   var TYPE_META = {
     lang: { label: "ポルトガル語", icon: "🗣️", cls: "t-lang" },
     hist: { label: "歴史", icon: "📜", cls: "t-hist" },
     math: { label: "数学", icon: "🧮", cls: "t-math" },
   };
 
-  var STORAGE_KEY = "luso-math-progress-v1";
+  var SLOTS = 5;
+  var SAVE_PREFIX = "luso-math-save-";
+  var CLEAR_KEY = "luso-math-cleared-v2";
 
-  // ---- 状態 ----
-  var state = {
-    campaign: null, // 現在のキャンペーンオブジェクト
-    stageIndex: 0, // 現在のステージ番号
-    qIndex: 0, // ステージ内の問題番号
-    correct: 0, // ステージ内の正解数
-    answered: false, // 現在の問題に解答済みか
-    totalScore: 0, // 通算スコア（全体）
-  };
-
-  // ---- 進捗の保存／読み込み（クリア済みステージ数） ----
-  function loadProgress() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
-    } catch (e) {
-      return {};
-    }
-  }
-  function saveProgress(p) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-    } catch (e) {
-      /* localStorage 不可でも続行 */
-    }
-  }
-  // そのキャンペーンで「解放済み」のステージ数（0なら第1章のみ）
-  function unlockedCount(campaignId) {
-    var p = loadProgress();
-    return (p[campaignId] && p[campaignId].cleared) || 0;
-  }
-  function markStageCleared(campaignId, stageIndex) {
-    var p = loadProgress();
-    if (!p[campaignId]) p[campaignId] = { cleared: 0 };
-    if (stageIndex + 1 > p[campaignId].cleared) {
-      p[campaignId].cleared = stageIndex + 1;
-    }
-    saveProgress(p);
+  // ---- 進行中の状態 ----
+  var S = null; // { camp, ch, pos, vars:{know,ans,heart}, choiceLog }
+  function freshVars() {
+    return { know: 0, ans: 0, heart: 0 };
   }
 
   // ---- DOM ヘルパ ----
@@ -70,29 +36,150 @@
   function clear() {
     app.innerHTML = "";
   }
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+    });
+  }
 
   /* ========================================================
-     画面1：タイトル＆キャンペーン選択
+     セーブ／ロード
+     ======================================================== */
+  function readSlot(i) {
+    try {
+      return JSON.parse(localStorage.getItem(SAVE_PREFIX + i)) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writeSlot(i, data) {
+    try {
+      localStorage.setItem(SAVE_PREFIX + i, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function deleteSlot(i) {
+    try {
+      localStorage.removeItem(SAVE_PREFIX + i);
+    } catch (e) {}
+  }
+  function snapshot() {
+    var camp = CAMPAIGNS[S.camp];
+    return {
+      camp: S.camp,
+      ch: S.ch,
+      pos: S.pos,
+      vars: JSON.parse(JSON.stringify(S.vars)),
+      choiceLog: S.choiceLog.slice(),
+      ts: Date.now(),
+      meta: {
+        campName: camp.name,
+        flag: camp.flag,
+        chTitle: camp.chapters[S.ch].title,
+        chNo: S.ch + 1,
+        chTotal: camp.chapters.length,
+      },
+    };
+  }
+  function fmtTime(ts) {
+    var d = new Date(ts);
+    function p(n) {
+      return (n < 10 ? "0" : "") + n;
+    }
+    return (
+      d.getFullYear() +
+      "/" +
+      p(d.getMonth() + 1) +
+      "/" +
+      p(d.getDate()) +
+      " " +
+      p(d.getHours()) +
+      ":" +
+      p(d.getMinutes())
+    );
+  }
+
+  // クリア記録（チャプター選択の解放用）
+  function loadCleared() {
+    try {
+      return JSON.parse(localStorage.getItem(CLEAR_KEY)) || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function markCleared(campId, chIndex) {
+    var c = loadCleared();
+    if (!c[campId]) c[campId] = 0;
+    if (chIndex + 1 > c[campId]) c[campId] = chIndex + 1;
+    try {
+      localStorage.setItem(CLEAR_KEY, JSON.stringify(c));
+    } catch (e) {}
+  }
+  function clearedCount(campId) {
+    return loadCleared()[campId] || 0;
+  }
+
+  /* ========================================================
+     タイトル
      ======================================================== */
   function renderTitle() {
+    S = null;
     clear();
-    state.campaign = null;
-
-    var wrap = el("div", "screen title-screen");
-    wrap.appendChild(
+    var w = el("div", "screen title-screen");
+    w.appendChild(
       el(
         "div",
         "title-hero",
         '<h1>Luso<span>·</span>Math</h1>' +
           '<p class="tagline">ポルトガル語 × 数学 × アフリカ近現代史</p>' +
-          '<p class="subtle">遊びながら、高校数学（文系）と、モザンビーク・アンゴラの歴史とポルトガル語を学ぼう。</p>'
+          '<p class="subtle">これは、失われた記録を取りもどす物語。<br>' +
+          "モザンビークとアンゴラ——その近現代史を、言葉と数字でたどり直す。</p>"
+      )
+    );
+
+    var menu = el("div", "title-menu");
+    var bStart = el("button", "btn primary big", "▶　物語をはじめる");
+    bStart.addEventListener("click", renderCampaignSelect);
+    var bLoad = el("button", "btn ghost big", "📁　つづきから（ロード）");
+    bLoad.addEventListener("click", function () {
+      openSaveMenu("load", renderTitle);
+    });
+    menu.appendChild(bStart);
+    menu.appendChild(bLoad);
+    w.appendChild(menu);
+
+    w.appendChild(
+      el(
+        "p",
+        "footnote",
+        "💡 物語の中で「ポルトガル語・歴史・数学」の問いに答え、選択を重ねます。<br>" +
+          "知識と、あなたの眼差しが、たどりつく結末を変えます（各編に複数のエンディング）。"
+      )
+    );
+    app.appendChild(w);
+  }
+
+  /* ========================================================
+     編（キャンペーン）選択
+     ======================================================== */
+  function renderCampaignSelect() {
+    clear();
+    var w = el("div", "screen campaign-select");
+    w.appendChild(
+      el(
+        "div",
+        "cs-head",
+        "<h2>どちらの記録庫へ向かう？</h2>" +
+          '<p class="subtle">2つの国の物語。どちらから始めても、別々の結末が待っています。</p>'
       )
     );
 
     var cards = el("div", "campaign-cards");
     [CAMPAIGNS.moz, CAMPAIGNS.ang].forEach(function (c) {
-      var unlocked = unlockedCount(c.id);
-      var total = c.stages.length;
+      var done = clearedCount(c.id);
+      var total = c.chapters.length;
       var card = el("button", "campaign-card");
       card.style.setProperty("--accent", c.color);
       card.innerHTML =
@@ -105,171 +192,264 @@
         '<div class="cc-sub">' +
         c.subtitle +
         "</div>" +
-        '<div class="cc-prog">進捗：' +
-        unlocked +
+        '<div class="cc-prog">読了：' +
+        done +
         " / " +
         total +
-        " 章クリア</div>";
+        " 章</div>";
       card.addEventListener("click", function () {
-        renderStageSelect(c);
+        renderChapterSelect(c);
       });
       cards.appendChild(card);
     });
-    wrap.appendChild(cards);
+    w.appendChild(cards);
 
-    wrap.appendChild(
-      el(
-        "p",
-        "footnote",
-        "💡 各章では「ポルトガル語 → 歴史 → 数学」の順に出題します。半分以上正解で次の章が解放されます。"
-      )
-    );
-    app.appendChild(wrap);
+    var back = el("button", "btn ghost", "← タイトルへ");
+    back.addEventListener("click", renderTitle);
+    var row = el("div", "btn-row");
+    row.appendChild(back);
+    w.appendChild(row);
+    app.appendChild(w);
   }
 
   /* ========================================================
-     画面2：ステージ（章）選択
+     チャプター選択（通し再生 or 章ジャンプ）
      ======================================================== */
-  function renderStageSelect(campaign) {
+  function renderChapterSelect(camp) {
     clear();
-    state.campaign = campaign;
-    var unlocked = unlockedCount(campaign.id);
-
-    var wrap = el("div", "screen stage-select");
-    wrap.style.setProperty("--accent", campaign.color);
+    var done = clearedCount(camp.id);
+    var w = el("div", "screen stage-select");
+    w.style.setProperty("--accent", camp.color);
 
     var head = el("div", "stage-head");
     head.appendChild(
       el(
         "div",
         "",
-        '<h2>' +
-          campaign.flag +
+        "<h2>" +
+          camp.flag +
           " " +
-          campaign.name +
+          camp.name +
           "</h2>" +
           '<p class="intro">' +
-          campaign.intro +
+          camp.intro +
           "</p>"
       )
     );
-    var back = el("button", "btn ghost", "← トップへ");
-    back.addEventListener("click", renderTitle);
+    var back = el("button", "btn ghost", "← 編を選び直す");
+    back.addEventListener("click", renderCampaignSelect);
     head.appendChild(back);
-    wrap.appendChild(head);
+    w.appendChild(head);
+
+    var row = el("div", "btn-row");
+    var startNew = el("button", "btn primary", "▶ 最初から通しで読む");
+    startNew.addEventListener("click", function () {
+      beginPlay(camp.id, 0, freshVars(), []);
+    });
+    var load = el("button", "btn ghost", "📁 ロード");
+    load.addEventListener("click", function () {
+      openSaveMenu("load", function () {
+        renderChapterSelect(camp);
+      });
+    });
+    row.appendChild(startNew);
+    row.appendChild(load);
+    w.appendChild(row);
+
+    w.appendChild(
+      el("p", "select-note", "── 章を選んで読み直す（その章から再開・知識はリセット） ──")
+    );
 
     var list = el("div", "stage-list");
-    campaign.stages.forEach(function (st, i) {
-      var locked = i > unlocked; // unlocked章まで＋次の1章が遊べる
-      var done = i < unlocked;
+    camp.chapters.forEach(function (ch, i) {
+      var locked = i > done;
+      var cleared = i < done;
       var item = el("button", "stage-item" + (locked ? " locked" : ""));
       item.innerHTML =
         '<div class="si-no">' +
-        (done ? "✓" : i + 1) +
+        (cleared ? "✓" : i + 1) +
         "</div>" +
-        '<div class="si-body">' +
-        '<div class="si-title">' +
-        st.title +
+        '<div class="si-body"><div class="si-title">' +
+        ch.title +
         (locked ? " 🔒" : "") +
-        "</div>" +
-        '<div class="si-era">' +
-        st.era +
-        "</div>" +
-        "</div>";
+        '</div><div class="si-era">' +
+        ch.era +
+        "</div></div>";
       if (!locked) {
         item.addEventListener("click", function () {
-          startStage(i);
+          beginPlay(camp.id, i, freshVars(), []);
         });
       }
       list.appendChild(item);
     });
-    wrap.appendChild(list);
-    app.appendChild(wrap);
+    w.appendChild(list);
+    app.appendChild(w);
   }
 
   /* ========================================================
-     画面3：章の導入（learn パネル）
+     再生の開始
      ======================================================== */
-  function startStage(stageIndex) {
-    state.stageIndex = stageIndex;
-    state.qIndex = 0;
-    state.correct = 0;
-    state.answered = false;
+  function beginPlay(campId, chIndex, vars, choiceLog) {
+    S = { camp: campId, ch: chIndex, pos: 0, vars: vars, choiceLog: choiceLog };
+    renderChapterCard();
+  }
 
-    var st = state.campaign.stages[stageIndex];
+  function renderChapterCard() {
+    var camp = CAMPAIGNS[S.camp];
+    var ch = camp.chapters[S.ch];
     clear();
-    var wrap = el("div", "screen stage-intro");
-    wrap.style.setProperty("--accent", state.campaign.color);
-
-    var learnHtml = st.learn
-      .map(function (l) {
-        return "<li>" + l + "</li>";
-      })
-      .join("");
-
-    wrap.innerHTML =
-      '<div class="si-era-tag">' +
-      st.era +
+    var w = el("div", "screen chapter-card");
+    w.style.setProperty("--accent", camp.color);
+    w.innerHTML =
+      '<div class="cc-era">' +
+      ch.era +
       "</div>" +
+      '<div class="cc-no">第 ' +
+      (S.ch + 1) +
+      " 章</div>" +
       "<h2>" +
-      st.title +
+      ch.title +
       "</h2>" +
-      '<p class="lead">' +
-      st.lead +
-      "</p>" +
-      '<div class="learn-box"><h3>📖 この章のポイント</h3><ul>' +
-      learnHtml +
-      "</ul></div>";
-
-    var btnRow = el("div", "btn-row");
-    var startBtn = el("button", "btn primary", "クイズを始める →");
-    startBtn.addEventListener("click", renderQuestion);
-    var backBtn = el("button", "btn ghost", "← 章を選び直す");
-    backBtn.addEventListener("click", function () {
-      renderStageSelect(state.campaign);
+      (ch.subtitle ? '<p class="cc-sub2">' + ch.subtitle + "</p>" : "");
+    var btn = el("button", "btn primary big", "▶ 読み進める");
+    btn.addEventListener("click", function () {
+      S.pos = 0;
+      renderNode();
     });
-    btnRow.appendChild(backBtn);
-    btnRow.appendChild(startBtn);
-    wrap.appendChild(btnRow);
-    app.appendChild(wrap);
+    w.appendChild(btn);
+    app.appendChild(w);
   }
 
   /* ========================================================
-     画面4：問題出題
+     共通フレーム（ヘッダ＋ステージ＋テキスト枠）
      ======================================================== */
-  function renderQuestion() {
-    var st = state.campaign.stages[state.stageIndex];
-    var q = st.questions[state.qIndex];
-    var meta = TYPE_META[q.type];
-    state.answered = false;
+  function frame(inner) {
+    var camp = CAMPAIGNS[S.camp];
+    var ch = camp.chapters[S.ch];
     clear();
+    var w = el("div", "screen vn");
+    w.style.setProperty("--accent", camp.color);
 
-    var wrap = el("div", "screen quiz");
-    wrap.style.setProperty("--accent", state.campaign.color);
-
-    // 進捗バー
-    var total = st.questions.length;
-    var pct = Math.round((state.qIndex / total) * 100);
-    wrap.appendChild(
+    // ヘッダ（左：メニュー、右上の固定音楽ボタンと重ならないよう配置）
+    var head = el("div", "vn-head");
+    var menuBtn = el("button", "vn-menu-btn", "≡ メニュー");
+    menuBtn.addEventListener("click", openPlayMenu);
+    head.appendChild(menuBtn);
+    head.appendChild(
       el(
         "div",
-        "quiz-top",
-        '<div class="qt-info"><span class="chap">' +
-          st.title +
+        "vn-chap",
+        camp.flag + " 第" + (S.ch + 1) + "章　" + esc(ch.title)
+      )
+    );
+    w.appendChild(head);
+
+    // メーター
+    var ratio = S.vars.ans ? Math.round((S.vars.know / S.vars.ans) * 100) : 0;
+    w.appendChild(
+      el(
+        "div",
+        "vn-meters",
+        '<span class="meter know">📚 知識 ' +
+          S.vars.know +
+          "/" +
+          S.vars.ans +
+          (S.vars.ans ? "（" + ratio + "%）" : "") +
           "</span>" +
-          '<span class="count">問題 ' +
-          (state.qIndex + 1) +
-          " / " +
-          total +
-          "</span></div>" +
-          '<div class="bar"><div class="bar-fill" style="width:' +
-          pct +
-          '%"></div></div>'
+          '<span class="meter heart">🕯️ 眼差し ' +
+          S.vars.heart +
+          "</span>"
       )
     );
 
-    // タイプバッジ＋科目
-    var badge =
+    var stage = el("div", "vn-stage");
+    stage.appendChild(inner);
+    w.appendChild(stage);
+    app.appendChild(w);
+    return w;
+  }
+
+  /* ========================================================
+     ノード描画
+     ======================================================== */
+  function renderNode() {
+    var ch = CAMPAIGNS[S.camp].chapters[S.ch];
+    if (S.pos >= ch.script.length) {
+      endChapter();
+      return;
+    }
+    var node = ch.script[S.pos];
+    switch (node.t) {
+      case "say":
+        renderSay(node);
+        break;
+      case "narr":
+        renderSay({ who: "", text: node.text, narr: true });
+        break;
+      case "info":
+        renderInfo(node);
+        break;
+      case "quiz":
+        renderQuiz(node);
+        break;
+      case "choice":
+        renderChoice(node);
+        break;
+      default:
+        S.pos++;
+        renderNode();
+    }
+  }
+
+  function advance() {
+    S.pos++;
+    renderNode();
+  }
+
+  // ---- セリフ／ナレーション ----
+  function renderSay(node) {
+    var box = el("div", "vn-box" + (node.narr ? " narr" : ""));
+    if (node.who) {
+      box.appendChild(el("div", "vn-name", esc(node.who)));
+    }
+    box.appendChild(el("div", "vn-text", node.text));
+    box.appendChild(el("div", "vn-next", "▼ クリックで進む"));
+    box.addEventListener("click", advance);
+    var f = frame(box);
+    // 立ち絵的な雰囲気アイコン
+    if (node.face) setFace(f, node.face);
+  }
+
+  function setFace(frameEl, face) {
+    var st = frameEl.querySelector(".vn-stage");
+    var av = el("div", "vn-avatar", face);
+    st.insertBefore(av, st.firstChild);
+  }
+
+  // ---- 学習メモ ----
+  function renderInfo(node) {
+    var box = el("div", "vn-info");
+    box.innerHTML =
+      "<h3>📖 " +
+      esc(node.title || "記録のメモ") +
+      "</h3><ul>" +
+      node.items
+        .map(function (i) {
+          return "<li>" + i + "</li>";
+        })
+        .join("") +
+      "</ul>";
+    var btn = el("button", "btn primary", "確認した →");
+    btn.addEventListener("click", advance);
+    box.appendChild(btn);
+    frame(box);
+  }
+
+  // ---- クイズ ----
+  function renderQuiz(node) {
+    var meta = TYPE_META[node.qtype] || TYPE_META.hist;
+    var box = el("div", "vn-quiz");
+    var badges =
       '<span class="badge ' +
       meta.cls +
       '">' +
@@ -277,163 +457,349 @@
       " " +
       meta.label +
       "</span>";
-    if (q.subject) {
-      badge += '<span class="badge subject">' + q.subject + "</span>";
-    }
-    wrap.appendChild(el("div", "q-badges", badge));
+    if (node.subject)
+      badges += '<span class="badge subject">' + esc(node.subject) + "</span>";
+    box.appendChild(el("div", "q-badges", badges));
+    if (node.lead) box.appendChild(el("div", "q-lead", node.lead));
+    box.appendChild(el("div", "q-text", node.q));
 
-    // 設問
-    wrap.appendChild(el("div", "q-text", q.q));
-
-    // 選択肢
     var opts = el("div", "options");
-    q.options.forEach(function (opt, i) {
+    node.options.forEach(function (opt, i) {
       var b = el("button", "option", "<span>" + opt + "</span>");
       b.addEventListener("click", function () {
-        onAnswer(i, b, opts);
+        onAnswer(node, i, opts);
       });
       opts.appendChild(b);
     });
-    wrap.appendChild(opts);
-
-    // フィードバック領域
-    wrap.appendChild(el("div", "feedback", ""));
-
-    app.appendChild(wrap);
+    box.appendChild(opts);
+    box.appendChild(el("div", "feedback", ""));
+    frame(box);
   }
 
-  function onAnswer(choice, btn, optsEl) {
-    if (state.answered) return;
-    state.answered = true;
-    var st = state.campaign.stages[state.stageIndex];
-    var q = st.questions[state.qIndex];
-    var correct = q.answer;
-
-    var buttons = optsEl.querySelectorAll(".option");
-    buttons.forEach(function (b, i) {
+  function onAnswer(node, choice, optsEl) {
+    if (optsEl.dataset.done) return;
+    optsEl.dataset.done = "1";
+    var correct = node.answer;
+    optsEl.querySelectorAll(".option").forEach(function (b, i) {
       b.classList.add("disabled");
       if (i === correct) b.classList.add("right");
       if (i === choice && choice !== correct) b.classList.add("wrong");
     });
-
     var ok = choice === correct;
-    if (ok) {
-      state.correct++;
-      state.totalScore++;
-    }
+    S.vars.ans++;
+    if (ok) S.vars.know++;
 
     var fb = app.querySelector(".feedback");
     fb.innerHTML =
       '<div class="fb-card ' +
       (ok ? "ok" : "ng") +
-      '">' +
-      '<div class="fb-head">' +
-      (ok ? "⭕ 正解！" : "❌ 不正解") +
-      "</div>" +
-      '<div class="fb-explain">' +
-      q.explain +
-      "</div>" +
-      "</div>";
-
-    var next = el(
-      "button",
-      "btn primary",
-      state.qIndex + 1 < st.questions.length ? "次の問題 →" : "結果を見る →"
-    );
-    next.addEventListener("click", function () {
-      state.qIndex++;
-      if (state.qIndex < st.questions.length) {
-        renderQuestion();
-      } else {
-        renderResult();
-      }
-    });
+      '"><div class="fb-head">' +
+      (ok ? "⭕ 正解" : "❌ 不正解") +
+      '</div><div class="fb-explain">' +
+      node.explain +
+      "</div></div>";
+    var next = el("button", "btn primary", "つづける →");
+    next.addEventListener("click", advance);
     fb.appendChild(next);
     fb.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  /* ========================================================
-     画面5：章のリザルト
-     ======================================================== */
-  function renderResult() {
-    var st = state.campaign.stages[state.stageIndex];
-    var total = st.questions.length;
-    var score = state.correct;
-    var ratio = score / total;
-    var passed = ratio >= 0.5; // 半分以上で次章解放
+  // ---- 選択肢 ----
+  function renderChoice(node) {
+    var box = el("div", "vn-choice");
+    if (node.text) box.appendChild(el("div", "vn-text choice-prompt", node.text));
+    var list = el("div", "choice-list");
+    node.choices.forEach(function (c, i) {
+      var b = el("button", "choice-btn", c.label);
+      b.addEventListener("click", function () {
+        onChoice(node, c);
+      });
+      list.appendChild(b);
+    });
+    box.appendChild(list);
+    frame(box);
+  }
 
-    if (passed) {
-      markStageCleared(state.campaign.id, state.stageIndex);
-    }
-
-    var rank, msg;
-    if (ratio === 1) {
-      rank = "S";
-      msg = "全問正解！完璧です。Parabéns!（おめでとう）";
-    } else if (ratio >= 0.8) {
-      rank = "A";
-      msg = "すばらしい！よく理解できています。";
-    } else if (ratio >= 0.5) {
-      rank = "B";
-      msg = "合格！次の章が解放されました。";
+  function onChoice(node, c) {
+    if (typeof c.heart === "number") S.vars.heart += c.heart;
+    S.choiceLog.push({ ch: S.ch, pos: S.pos, label: c.label });
+    if (c.reply) {
+      // 選択への応答を1枚はさんでから進む
+      var box = el("div", "vn-box");
+      if (c.who) box.appendChild(el("div", "vn-name", esc(c.who)));
+      box.appendChild(el("div", "vn-text", c.reply));
+      box.appendChild(el("div", "vn-next", "▼ クリックで進む"));
+      box.addEventListener("click", advance);
+      frame(box);
     } else {
-      rank = "C";
-      msg = "もう一度挑戦してみよう。ポイントを読み返すと◎。";
+      advance();
     }
+  }
+
+  /* ========================================================
+     章の終わり → 次章 or エンディング
+     ======================================================== */
+  function endChapter() {
+    markCleared(S.camp, S.ch);
+    var camp = CAMPAIGNS[S.camp];
+    if (S.ch + 1 < camp.chapters.length) {
+      // 章間：小休止画面
+      clear();
+      var w = el("div", "screen chapter-card interlude");
+      w.style.setProperty("--accent", camp.color);
+      w.innerHTML =
+        '<div class="cc-no">第 ' + (S.ch + 1) + " 章 ―― 了</div>";
+      var ratio = S.vars.ans
+        ? Math.round((S.vars.know / S.vars.ans) * 100)
+        : 0;
+      w.appendChild(
+        el(
+          "p",
+          "interlude-stat",
+          "ここまでの知識：" +
+            S.vars.know +
+            " / " +
+            S.vars.ans +
+            "（" +
+            ratio +
+            "%）　眼差し：" +
+            S.vars.heart
+        )
+      );
+      var rowS = el("div", "btn-row");
+      var save = el("button", "btn ghost", "📁 ここでセーブ");
+      save.addEventListener("click", function () {
+        openSaveMenu("save", endChapter);
+      });
+      var next = el("button", "btn primary big", "次の章へ →");
+      next.addEventListener("click", function () {
+        S.ch++;
+        renderChapterCard();
+      });
+      rowS.appendChild(save);
+      rowS.appendChild(next);
+      w.appendChild(rowS);
+      app.appendChild(w);
+    } else {
+      renderEnding();
+    }
+  }
+
+  /* ========================================================
+     エンディング（複数）
+     ======================================================== */
+  function computeEnding(camp) {
+    var ratio = S.vars.ans ? S.vars.know / S.vars.ans : 0;
+    var heartHigh = S.vars.heart >= (camp.heartThreshold || 2);
+    var knowHigh = ratio >= 0.7;
+    if (ratio < 0.4) return "perdido"; // 未完の書庫（バッド）
+    if (knowHigh && heartHigh) return "guardiao"; // 記憶の守り手（トゥルー）
+    if (knowHigh && !heartHigh) return "cronista"; // 冷徹な年代記者
+    if (!knowHigh && heartHigh) return "testemunha"; // 寄り添う証人
+    return "aprendiz"; // 見習いのまま（ノーマル）
+  }
+
+  function renderEnding() {
+    var camp = CAMPAIGNS[S.camp];
+    var key = computeEnding(camp);
+    var end = camp.endings[key];
+    var ratio = S.vars.ans ? Math.round((S.vars.know / S.vars.ans) * 100) : 0;
 
     clear();
-    var wrap = el("div", "screen result");
-    wrap.style.setProperty("--accent", state.campaign.color);
-    var isLast = state.stageIndex + 1 >= state.campaign.stages.length;
-
-    wrap.innerHTML =
-      '<div class="rank rank-' +
-      rank +
-      '">' +
-      rank +
+    var w = el("div", "screen ending");
+    w.style.setProperty("--accent", camp.color);
+    w.innerHTML =
+      '<div class="ending-tag">ENDING</div>' +
+      '<div class="ending-pt">' +
+      esc(end.pt) +
       "</div>" +
       "<h2>" +
-      st.title +
-      " クリア</h2>" +
-      '<div class="score-big">' +
-      score +
+      esc(end.title) +
+      "</h2>" +
+      '<div class="ending-body">' +
+      end.body +
+      "</div>" +
+      '<div class="ending-stat">最終的な知識：' +
+      S.vars.know +
       " / " +
-      total +
-      " 問正解</div>" +
-      '<p class="result-msg">' +
-      msg +
-      "</p>" +
-      (passed && !isLast
-        ? '<p class="unlock">🔓 次の章が解放されました！</p>'
-        : "") +
-      (passed && isLast
-        ? '<p class="unlock">🎉 ' +
-          state.campaign.name +
-          "をすべてクリアしました！</p>"
-        : "");
+      S.vars.ans +
+      "（" +
+      ratio +
+      "%）　眼差し：" +
+      S.vars.heart +
+      "</div>" +
+      '<p class="ending-hint">※ 知識（正答率）と眼差し（選択）の組み合わせで、結末は4通りに分かれます。</p>';
 
     var row = el("div", "btn-row");
-    var retry = el("button", "btn ghost", "🔁 この章をやり直す");
+    var retry = el("button", "btn ghost", "🔁 この編をやり直す");
     retry.addEventListener("click", function () {
-      startStage(state.stageIndex);
+      beginPlay(camp.id, 0, freshVars(), []);
     });
+    var title = el("button", "btn primary", "タイトルへ →");
+    title.addEventListener("click", renderTitle);
     row.appendChild(retry);
+    row.appendChild(title);
+    w.appendChild(row);
+    app.appendChild(w);
+  }
 
-    if (passed && !isLast) {
-      var nextBtn = el("button", "btn primary", "次の章へ →");
-      nextBtn.addEventListener("click", function () {
-        startStage(state.stageIndex + 1);
+  /* ========================================================
+     プレイ中メニュー（セーブ／ロード／タイトル）
+     ======================================================== */
+  function openPlayMenu() {
+    var ov = el("div", "overlay");
+    var panel = el("div", "menu-panel");
+    panel.appendChild(el("h3", "", "メニュー"));
+    var bSave = el("button", "btn primary", "📁 セーブ");
+    bSave.addEventListener("click", function () {
+      closeOverlay(ov);
+      openSaveMenu("save", function () {
+        renderNode();
       });
-      row.appendChild(nextBtn);
-    } else {
-      var mapBtn = el("button", "btn primary", "章の一覧へ →");
-      mapBtn.addEventListener("click", function () {
-        renderStageSelect(state.campaign);
+    });
+    var bLoad = el("button", "btn ghost", "📂 ロード");
+    bLoad.addEventListener("click", function () {
+      closeOverlay(ov);
+      openSaveMenu("load", function () {
+        renderNode();
       });
-      row.appendChild(mapBtn);
+    });
+    var bTitle = el("button", "btn ghost", "🏠 タイトルへ戻る");
+    bTitle.addEventListener("click", function () {
+      closeOverlay(ov);
+      if (confirm("タイトルに戻りますか？（セーブしていない進行は失われます）")) {
+        renderTitle();
+      }
+    });
+    var bClose = el("button", "btn ghost", "× とじる");
+    bClose.addEventListener("click", function () {
+      closeOverlay(ov);
+    });
+    [bSave, bLoad, bTitle, bClose].forEach(function (b) {
+      panel.appendChild(b);
+    });
+    ov.appendChild(panel);
+    ov.addEventListener("click", function (e) {
+      if (e.target === ov) closeOverlay(ov);
+    });
+    document.body.appendChild(ov);
+  }
+  function closeOverlay(ov) {
+    if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  }
+
+  /* ---- セーブ／ロード画面（5スロット） ---- */
+  function openSaveMenu(mode, onBack) {
+    var ov = el("div", "overlay");
+    var panel = el("div", "save-panel");
+    panel.appendChild(
+      el("h3", "", mode === "save" ? "📁 セーブ（5枠）" : "📂 ロード（5枠）")
+    );
+    if (mode === "save" && !S) {
+      panel.appendChild(el("p", "save-note", "セーブできる進行がありません。"));
     }
-    wrap.appendChild(row);
-    app.appendChild(wrap);
+
+    var listEl = el("div", "slot-list");
+    for (var i = 1; i <= SLOTS; i++) {
+      (function (slot) {
+        var data = readSlot(slot);
+        var item = el("div", "slot");
+        var info;
+        if (data) {
+          var r = data.vars.ans
+            ? Math.round((data.vars.know / data.vars.ans) * 100)
+            : 0;
+          info =
+            '<div class="slot-no">SLOT ' +
+            slot +
+            "</div>" +
+            '<div class="slot-main">' +
+            data.meta.flag +
+            " " +
+            esc(data.meta.campName) +
+            "　第" +
+            data.meta.chNo +
+            "章<br>" +
+            '<span class="slot-sub">' +
+            esc(data.meta.chTitle) +
+            "</span></div>" +
+            '<div class="slot-meta">知識 ' +
+            data.vars.know +
+            "/" +
+            data.vars.ans +
+            "（" +
+            r +
+            "%）・眼差し " +
+            data.vars.heart +
+            "<br>" +
+            fmtTime(data.ts) +
+            "</div>";
+        } else {
+          info =
+            '<div class="slot-no">SLOT ' +
+            slot +
+            '</div><div class="slot-main empty">― 空き ―</div>';
+        }
+        item.innerHTML = info;
+
+        var act = el("div", "slot-actions");
+        if (mode === "save") {
+          if (S) {
+            var sv = el("button", "btn primary sm", data ? "上書き保存" : "保存");
+            sv.addEventListener("click", function () {
+              if (data && !confirm("SLOT " + slot + " を上書きしますか？")) return;
+              writeSlot(slot, snapshot());
+              closeOverlay(ov);
+              openSaveMenu("save", onBack); // 反映して開き直す
+            });
+            act.appendChild(sv);
+          }
+        } else {
+          if (data) {
+            var ld = el("button", "btn primary sm", "ロード");
+            ld.addEventListener("click", function () {
+              closeOverlay(ov);
+              beginLoaded(data);
+            });
+            act.appendChild(ld);
+          }
+        }
+        if (data) {
+          var del = el("button", "btn ghost sm", "削除");
+          del.addEventListener("click", function () {
+            if (confirm("SLOT " + slot + " を削除しますか？")) {
+              deleteSlot(slot);
+              closeOverlay(ov);
+              openSaveMenu(mode, onBack);
+            }
+          });
+          act.appendChild(del);
+        }
+        item.appendChild(act);
+        listEl.appendChild(item);
+      })(i);
+    }
+    panel.appendChild(listEl);
+
+    var back = el("button", "btn ghost", "← 戻る");
+    back.addEventListener("click", function () {
+      closeOverlay(ov);
+      if (onBack) onBack();
+    });
+    panel.appendChild(back);
+    ov.appendChild(panel);
+    document.body.appendChild(ov);
+  }
+
+  function beginLoaded(data) {
+    S = {
+      camp: data.camp,
+      ch: data.ch,
+      pos: data.pos,
+      vars: JSON.parse(JSON.stringify(data.vars)),
+      choiceLog: (data.choiceLog || []).slice(),
+    };
+    renderNode();
   }
 
   // ---- 起動 ----
