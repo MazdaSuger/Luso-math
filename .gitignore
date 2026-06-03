@@ -1,0 +1,6 @@
+# Claude Code ローカル設定（環境ごとの権限など）
+.claude/settings.local.json
+
+# OS / エディタ
+.DS_Store
+Thumbs.db

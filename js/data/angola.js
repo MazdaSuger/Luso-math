@@ -8,7 +8,7 @@ window.CAMPAIGN_ANG = {
   name: "アンゴラ編",
   flag: "🇦🇴",
   subtitle: "数学A・B・C ＋ アンゴラ近現代史 ＋ ポルトガル語",
-  color: "#c8102e",
+  color: "#ff3d8b",
   intro:
     "大西洋に面した資源大国アンゴラ（Angola）。首都はルアンダ（Luanda）。" +
     "ポルトガルの植民地支配、冷戦をまきこんだ独立闘争と内戦、そして2002年の和平。" +

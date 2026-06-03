@@ -9,7 +9,7 @@ window.CAMPAIGN_MOZ = {
   name: "モザンビーク編",
   flag: "🇲🇿",
   subtitle: "数学Ⅰ・Ⅱ ＋ モザンビーク近現代史 ＋ ポルトガル語",
-  color: "#1b8a3a",
+  color: "#2ff0c0",
   intro:
     "インド洋に面した国モザンビーク（Moçambique）。首都はマプート（Maputo）。" +
     "ポルトガルの植民地支配から、解放闘争、独立、内戦、そして和平へ。" +
