@@ -41,6 +41,17 @@
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
     });
   }
+  // Fisher–Yates シャッフル（元配列は変更しない）
+  function shuffled(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i];
+      a[i] = a[j];
+      a[j] = t;
+    }
+    return a;
+  }
 
   /* ========================================================
      セーブ／ロード
@@ -122,6 +133,52 @@
   }
 
   /* ========================================================
+     実績（隠しエンドの解放管理）
+     ach = { trueEnd:{moz:bool,ang:bool}, hidden:bool, perfectElo:bool,
+             seen:{<endingKey>:count} }
+     ======================================================== */
+  var ACH_KEY = "luso-math-ach-v1";
+  function loadAch() {
+    try {
+      var a = JSON.parse(localStorage.getItem(ACH_KEY)) || {};
+      a.trueEnd = a.trueEnd || {};
+      a.seen = a.seen || {};
+      return a;
+    } catch (e) {
+      return { trueEnd: {}, seen: {} };
+    }
+  }
+  function saveAch(a) {
+    try {
+      localStorage.setItem(ACH_KEY, JSON.stringify(a));
+    } catch (e) {}
+  }
+
+  // 隠しエンド（両編で「記憶の守り手」に到達すると解放）
+  var HIDDEN_ENDING = {
+    pt: "O Elo — A Ponte entre Dois Mares",
+    title: "架け橋 ―― ふたつの海をつなぐ者",
+    body:
+      "インド洋のマプート、大西洋のルアンダ。遠く離れたふたつの記録庫の扉を、" +
+      "あなたは両方とも開けきった。<br><br>" +
+      "同じ言語で書かれ、同じ年に独立し、同じように内戦の闇をくぐり、" +
+      "そして再び立ち上がったふたつの国。その記憶が、いま一本の糸でつながる。<br><br>" +
+      "ドナ・マルタとセニョール・ジョアキン――会ったことのないはずのふたりの声が、" +
+      "あなたの中で重なって響く。<br>" +
+      "「忘れないと決めた者だけが、海を越えて記憶を運べる」。<br><br>" +
+      "あなたはもう、ただの見習いではない。ふたつの海をつなぐ、" +
+      "ひとりの<strong>語り部</strong>だ。",
+    bodyPerfect:
+      "<br><br>――そして、すべての問いに、ひとつの誤りもなく答えきった者へ。" +
+      "この物語は、最後の一行をあなたに託す。<em>A memória é a nossa pátria.</em>" +
+      "（記憶こそ、わたしたちの祖国）。",
+  };
+
+  function otherCampId(id) {
+    return id === "moz" ? "ang" : "moz";
+  }
+
+  /* ========================================================
      タイトル
      ======================================================== */
   function renderTitle() {
@@ -148,14 +205,45 @@
     });
     menu.appendChild(bStart);
     menu.appendChild(bLoad);
+
+    // 隠しエンド解放後のみ表示する再生ボタン
+    var ach = loadAch();
+    if (ach.hidden) {
+      var bSecret = el(
+        "button",
+        "btn secret big",
+        "🌟　隠しエンド「架け橋」を観る"
+      );
+      bSecret.addEventListener("click", function () {
+        renderHiddenEnding({ fromPlay: false, perfect: ach.perfectElo });
+      });
+      menu.appendChild(bSecret);
+    }
     w.appendChild(menu);
+
+    // エンディング解放状況
+    var unlocked = ["guardiao", "cronista", "testemunha", "aprendiz", "perdido"]
+      .filter(function (k) {
+        return ach.seen[k];
+      }).length;
+    w.appendChild(
+      el(
+        "div",
+        "ending-collection",
+        "📜 解放したエンディング：" +
+          unlocked +
+          " / 5 種" +
+          (ach.hidden ? "　＋🌟 隠しエンド" : "")
+      )
+    );
 
     w.appendChild(
       el(
         "p",
         "footnote",
         "💡 物語の中で「ポルトガル語・歴史・数学」の問いに答え、選択を重ねます。<br>" +
-          "知識と、あなたの眼差しが、たどりつく結末を変えます（各編に複数のエンディング）。"
+          "知識と、あなたの眼差しが、たどりつく結末を変えます（各編に複数のエンディング）。<br>" +
+          "🌟 両編で最良の結末「記憶の守り手」に至ると、隠された物語が開きます。"
       )
     );
     app.appendChild(w);
@@ -463,11 +551,19 @@
     if (node.lead) box.appendChild(el("div", "q-lead", node.lead));
     box.appendChild(el("div", "q-text", node.q));
 
+    // 選択肢の並び順をランダム化（正解の表示位置も併せて求める）
+    var order = shuffled(
+      node.options.map(function (_, i) {
+        return i;
+      })
+    );
+    var correctDisplay = order.indexOf(node.answer);
+
     var opts = el("div", "options");
-    node.options.forEach(function (opt, i) {
-      var b = el("button", "option", "<span>" + opt + "</span>");
+    order.forEach(function (origIdx, displayPos) {
+      var b = el("button", "option", "<span>" + node.options[origIdx] + "</span>");
       b.addEventListener("click", function () {
-        onAnswer(node, i, opts);
+        onAnswer(node, displayPos, correctDisplay, opts);
       });
       opts.appendChild(b);
     });
@@ -476,10 +572,10 @@
     frame(box);
   }
 
-  function onAnswer(node, choice, optsEl) {
+  // choice＝クリックされた表示位置、correct＝正解の表示位置
+  function onAnswer(node, choice, correct, optsEl) {
     if (optsEl.dataset.done) return;
     optsEl.dataset.done = "1";
-    var correct = node.answer;
     optsEl.querySelectorAll(".option").forEach(function (b, i) {
       b.classList.add("disabled");
       if (i === correct) b.classList.add("right");
@@ -602,24 +698,49 @@
   function renderEnding() {
     var camp = CAMPAIGNS[S.camp];
     var key = computeEnding(camp);
-    var end = camp.endings[key];
     var ratio = S.vars.ans ? Math.round((S.vars.know / S.vars.ans) * 100) : 0;
+    var perfect = S.vars.ans > 0 && S.vars.know === S.vars.ans;
 
+    // ---- 実績の更新と隠しエンド判定 ----
+    var ach = loadAch();
+    ach.seen[key] = (ach.seen[key] || 0) + 1;
+    var otherHadTrue = !!ach.trueEnd[otherCampId(camp.id)];
+    var hiddenNow = key === "guardiao" && otherHadTrue; // 両編で守り手 → 解放
+    if (key === "guardiao") ach.trueEnd[camp.id] = true;
+    if (hiddenNow) {
+      ach.hidden = true;
+      if (perfect) ach.perfectElo = true;
+    }
+    saveAch(ach);
+
+    if (hiddenNow) {
+      renderHiddenEnding({ fromPlay: true, perfect: ach.perfectElo, camp: camp });
+      return;
+    }
+
+    var end = camp.endings[key];
     clear();
     var w = el("div", "screen ending");
     w.style.setProperty("--accent", camp.color);
+
+    // 隠しエンドへのヒント：片方だけ守り手に到達した状態のとき
+    var hint =
+      "※ 知識（正答率）と眼差し（選択）の組み合わせで、結末は分岐します。";
+    if (key === "guardiao" && !ach.hidden) {
+      hint =
+        "🌟 <strong>記憶の守り手</strong>に到達。" +
+        "もう一方の編でも同じ結末にたどり着いたとき、隠された物語が開くかもしれない――";
+    }
+
     w.innerHTML =
       '<div class="ending-tag">ENDING</div>' +
       '<div class="ending-pt">' +
       esc(end.pt) +
-      "</div>" +
-      "<h2>" +
+      "</div><h2>" +
       esc(end.title) +
-      "</h2>" +
-      '<div class="ending-body">' +
+      '</h2><div class="ending-body">' +
       end.body +
-      "</div>" +
-      '<div class="ending-stat">最終的な知識：' +
+      '</div><div class="ending-stat">最終的な知識：' +
       S.vars.know +
       " / " +
       S.vars.ans +
@@ -627,8 +748,10 @@
       ratio +
       "%）　眼差し：" +
       S.vars.heart +
-      "</div>" +
-      '<p class="ending-hint">※ 知識（正答率）と眼差し（選択）の組み合わせで、結末は4通りに分かれます。</p>';
+      (perfect ? "　🏅全問正解" : "") +
+      '</div><p class="ending-hint">' +
+      hint +
+      "</p>";
 
     var row = el("div", "btn-row");
     var retry = el("button", "btn ghost", "🔁 この編をやり直す");
@@ -638,6 +761,42 @@
     var title = el("button", "btn primary", "タイトルへ →");
     title.addEventListener("click", renderTitle);
     row.appendChild(retry);
+    row.appendChild(title);
+    w.appendChild(row);
+    app.appendChild(w);
+  }
+
+  // 隠しエンド（解放時の演出／タイトルからの再生の両対応）
+  function renderHiddenEnding(opt) {
+    opt = opt || {};
+    clear();
+    var w = el("div", "screen ending hidden-ending");
+    w.innerHTML =
+      '<div class="ending-tag secret">🌟 SECRET ENDING</div>' +
+      (opt.fromPlay
+        ? '<div class="ending-unlock">―― 隠された結末が解放された ――</div>'
+        : "") +
+      '<div class="ending-pt">' +
+      esc(HIDDEN_ENDING.pt) +
+      "</div><h2>" +
+      esc(HIDDEN_ENDING.title) +
+      '</h2><div class="ending-body">' +
+      HIDDEN_ENDING.body +
+      (opt.perfect ? HIDDEN_ENDING.bodyPerfect : "") +
+      "</div>" +
+      (opt.fromPlay && opt.camp
+        ? '<div class="ending-stat">' +
+          opt.camp.flag +
+          " 最終的な知識：" +
+          S.vars.know +
+          " / " +
+          S.vars.ans +
+          (opt.perfect ? "　🏅全問正解" : "") +
+          "</div>"
+        : "");
+    var row = el("div", "btn-row");
+    var title = el("button", "btn primary", "タイトルへ →");
+    title.addEventListener("click", renderTitle);
     row.appendChild(title);
     w.appendChild(row);
     app.appendChild(w);
